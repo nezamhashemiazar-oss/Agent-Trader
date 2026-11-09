@@ -1,0 +1,47 @@
+package com.codeassist.agenttrader.agent
+
+import android.content.Context
+
+/**
+ * Agent settings. The API key is kept in private app preferences on the device and is never
+ * written into chat history or project files.
+ */
+class AgentConfig(context: Context) {
+    private val prefs = context.getSharedPreferences("agent_config", Context.MODE_PRIVATE)
+
+    var baseUrl: String
+        get() = prefs.getString("base_url", "") ?: ""
+        set(value) = prefs.edit().putString("base_url", value.trim().trimEnd('/')).apply()
+
+    var apiKey: String
+        get() = prefs.getString("api_key", "") ?: ""
+        set(value) = prefs.edit().putString("api_key", value.trim()).apply()
+
+    /** Bitunix secret key, used only for signing live requests. Stored like the API key. */
+    var bitunixApiKey: String
+        get() = prefs.getString("bitunix_api_key", "") ?: ""
+        set(value) = prefs.edit().putString("bitunix_api_key", value.trim()).apply()
+
+    var bitunixSecret: String
+        get() = prefs.getString("bitunix_secret", "") ?: ""
+        set(value) = prefs.edit().putString("bitunix_secret", value.trim()).apply()
+
+    var model: String
+        get() = prefs.getString("model", "") ?: ""
+        set(value) = prefs.edit().putString("model", value.trim()).apply()
+
+    var soul: String
+        get() = prefs.getString("soul", DEFAULT_SOUL) ?: DEFAULT_SOUL
+        set(value) = prefs.edit().putString("soul", value).apply()
+
+    val maxSteps: Int = 128
+    val thinking: String = "MAX"
+    val autonomousSec: Int = 15
+    val rateLimitWindow: Int = 128
+
+    companion object {
+        const val DEFAULT_SOUL =
+            "You are CodeAssist's agent. Be precise, admit uncertainty, never invent results, " +
+                "and ask before changing files unless auto-accept is on."
+    }
+}
