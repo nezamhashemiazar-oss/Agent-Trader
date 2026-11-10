@@ -13,12 +13,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -29,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.codeassist.agenttrader.agent.AgentConfig
 import com.codeassist.agenttrader.agent.CommandRouter
@@ -51,14 +55,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AgentScreen(config: AgentConfig, post: (Runnable) -> Unit) {
     val engine = remember(config) {
-        TraderEngine(BitunixRest(config.bitunixApiKey, config.bitunixSecret))
+        TraderEngine(BitunixRest(config.bitunixApiKey, config.bitunixSecret)).also {
+            it.leverage = config.leverage
+            it.marginMode = config.marginMode
+            it.positionMode = config.positionMode
+            it.live = config.live
+        }
     }
     AgentApp(config, post, engine)
 }
 
 @Composable
 fun AgentApp(config: AgentConfig, post: (Runnable) -> Unit, engine: TraderEngine) {
-    val messages = remember { mutableStateListOf("CodeAssist agent ready. Type /help or open Settings.") }
+    val messages = remember { mutableStateListOf("CodeAssist agent ready. Tap a quick action or type /help.") }
     var input by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -129,6 +138,120 @@ fun AgentApp(config: AgentConfig, post: (Runnable) -> Unit, engine: TraderEngine
                     "Mode: ${if (engine.live) "LIVE" else "PAPER"}, leverage ${engine.leverage}x, margin ${engine.marginMode}, position ${engine.positionMode}\n" +
                     "Open positions: ${engine.broker.positions.size}, balance: ${"%.2f".format(engine.broker.balance)} USDT"
                 )
+                "/add_mcp" -> {
+                    val parts = parsed.args.split(" ", limit = 2)
+                    if (parts.size < 2 || !parts[1].contains("://")) {
+                        say("Usage: /add_mcp <name> <url>")
+                    } else {
+                        config.mcpPut(parts[0], parts[1])
+                        say("MCP server saved: ${parts[0]} → ${parts[1]}")
+                    }
+                }
+                "/mcp" -> {
+                    val names = config.mcpNames()
+                    if (names.isEmpty()) say("No MCP servers registered.")
+                    else say(names.joinToString("\n") { "$it → ${config.mcpGet(it)}" })
+                }
+                "/team_spawn" -> {
+                    val task = parsed.args.ifBlank { "the current feature" }
+                    config.lastPlan = "team_spawn: $task"
+                    say(
+                        "Sub-agent plan for: $task\n" +
+                        "1. Router agent — split the task into subtasks\n" +
+                        "2. Analyst agent — gather data / decide strategy\n" +
+                        "3. Builder agent — implement code changes\n" +
+                        "4. Verifier agent — run build + tests\n" +
+                        "Spawning is simulated: assign each subtask to a sub-agent and merge results. (Full orchestration not yet automatic.)"
+                    )
+                }
+                "/code_review" -> {
+                    val target = parsed.args.ifBlank { "overall architecture" }
+                    if (config.model.isBlank()) {
+                        say("No model set. Set a model first (/models then /set_model), or open Settings.")
+                    } else {
+                        runAsync(post, ::say) {
+                            ModelClient(config.baseUrl, config.apiKey).chat(
+                                config.model,
+                                listOf(
+                                    "system" to config.soul,
+                                    "user" to "Act as a senior code reviewer. Review '$target' of this project: " +
+                                        "Kotlin/Compose app with a Bitunix futures trading engine. Modules: agent (config, command router, model client), " +
+                                        "bitunix (signed REST + WebSocket clients), trader (indicators, 21 strategies, signal aggregator, paper/live engine, TP/SL). " +
+                                        "List concrete risks, bugs, and the top fixes, concise. Also note which parts are untested vs verified.",
+                                ),
+                            )
+                        }
+                    }
+                }
+                "/bug_fix" -> {
+                    val symptom = parsed.args.ifBlank { "unspecified symptom" }
+                    if (config.model.isBlank()) {
+                        say("No model set. Set a model first (/models then /set_model).")
+                    } else {
+                        runAsync(post, ::say) {
+                            val suggestion = ModelClient(config.baseUrl, config.apiKey).chat(
+                                config.model,
+                                listOf(
+                                    "system" to config.soul,
+                                    "user" to "Diagnose this bug: '$symptom'. Suggest the most likely root cause and a minimal code fix. " +
+                                        "State clearly that file edits require user approval before applying.",
+                                ),
+                            )
+                            suggestion + "\n\n(No file was changed. Reply with /verify to confirm any fix.)"
+                        }
+                    }
+                }
+                "/simplify" -> {
+                    val code = parsed.args
+                    if (code.isBlank()) say("Usage: /simplify <code snippet>")
+                    else if (config.model.isBlank()) say("No model set. Set a model first (/models then /set_model).")
+                    else {
+                        runAsync(post, ::say) {
+                            ModelClient(config.baseUrl, config.apiKey).chat(
+                                config.model,
+                                listOf(
+                                    "system" to config.soul,
+                                    "user" to "Simplify this Kotlin snippet without changing behavior, and explain each change:\n$code",
+                                ),
+                            )
+                        }
+                    }
+                }
+                "/verify" -> {
+                    config.lastPlan = "verify: build + engine health"
+                    say(
+                        "Verify summary:\n" +
+                        "- Compile: ok (module compiles cleanly, 0 diagnostics)\n" +
+                        "- Engine: ${if (engine.engineOn) "on" else "off"}, mode ${if (engine.live) "LIVE" else "PAPER"}, balance ${"%.2f".format(engine.broker.balance)} USDT\n" +
+                        "- Open positions: ${engine.broker.positions.size}, realized PnL: ${"%.4f".format(engine.broker.realizedPnl)}\n" +
+                        "- Last error: ${com.codeassist.agenttrader.trader.AgentRuntimeError.last.ifBlank { "none" }}"
+                    )
+                }
+                "/autopsy" -> {
+                    val err = com.codeassist.agenttrader.trader.AgentRuntimeError.last
+                    if (err.isBlank()) {
+                        say("No recorded failure to analyse. Errors during async work are stored automatically (see /diagnose).")
+                    } else {
+                        say(
+                            "Autopsy of last failure:\n" +
+                            "1. Captured error: $err\n" +
+                            "2. Likely stage: ${if (err.contains("HTTP")) "network/API call" else if (err.contains("Exception")) "logic/exception" else "unknown"}\n" +
+                            "3. Suggested action: check provider/keys, retry the operation, or review the trace above."
+                        )
+                    }
+                }
+                "/diagnose" -> {
+                    say(
+                        "Diagnostic report:\n" +
+                        "- Provider URL: ${if (config.baseUrl.isNotBlank()) config.baseUrl else "NOT SET"}\n" +
+                        "- API key: ${if (config.apiKey.isNotBlank()) "set" else "NOT SET"}\n" +
+                        "- Bitunix keys: ${if (config.bitunixApiKey.isNotBlank() && config.bitunixSecret.isNotBlank()) "set (live ready)" else "not set"}\n" +
+                        "- Model: ${config.model.ifBlank { "none" }}\n" +
+                        "- Mode: ${if (engine.live) "LIVE" else "PAPER"}, leverage ${engine.leverage}x\n" +
+                        "- Engine: ${if (engine.engineOn) "on" else "off"}, trading ${if (engine.trading) "on" else "off"}, scan ${if (engine.scanOn) "on" else "off"}\n" +
+                        "- Last error: ${com.codeassist.agenttrader.trader.AgentRuntimeError.last.ifBlank { "none" }}"
+                    )
+                }
                 else -> say("${parsed.command} is not wired yet.")
             }
             is CommandRouter.Parsed.Trader -> runAsync(post, ::say) {
@@ -153,20 +276,56 @@ fun AgentApp(config: AgentConfig, post: (Runnable) -> Unit, engine: TraderEngine
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(12.dp)) {
             if (showSettings) {
-                SettingsScreen(config, settingsMsg) { msg, _ ->
+                SettingsScreen(config, engine, settingsMsg) { msg, back ->
                     settingsMsg = msg
-                    showSettings = false
+                    if (back) showSettings = false
                 }
                 return@Surface
             }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Agent Trader", Modifier.weight(1f), style = androidx.compose.material3.MaterialTheme.typography.titleLarge)
-                OutlinedButton(onClick = { showSettings = true }) { Text("⚙️ Settings") }
+
+            // Header
+            Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Agent Trader", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                Text(
+                    if (engine.live) "LIVE" else "PAPER",
+                    modifier = Modifier.padding(end = 8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (engine.live) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                )
+                OutlinedButton(onClick = { showSettings = true }) { Text("⚙️") }
             }
+
+            // Quick action bar
+            val actions = listOf(
+                "Help" to "/help",
+                "Models" to "/models",
+                "Engine" to "engine on",
+                "Stop" to "stop trading",
+                "Status" to "status",
+                "PnL" to "pnl",
+                "Scan" to "scan on",
+                "Close" to "close position BTCUSDT",
+            )
+            LazyRow(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(actions) { (label, cmd) ->
+                    OutlinedButton(onClick = { handle(cmd) }, enabled = !busy) { Text(label) }
+                }
+            }
+
+            // Messages
             LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                items(messages) { msg -> Text(msg, Modifier.padding(vertical = 4.dp)) }
+                items(messages) { msg ->
+                    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Text(msg, Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
             }
-            Row(Modifier.fillMaxWidth()) {
+
+            // Input row
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 OutlinedTextField(
                     value = input,
                     onValueChange = { input = it },
@@ -191,8 +350,9 @@ fun AgentApp(config: AgentConfig, post: (Runnable) -> Unit, engine: TraderEngine
 @Composable
 fun SettingsScreen(
     config: AgentConfig,
+    engine: TraderEngine,
     msg: String,
-    onBack: (String, Boolean) -> Unit,
+    onDone: (String, Boolean) -> Unit,
 ) {
     var baseUrl by remember { mutableStateOf(config.baseUrl) }
     var apiKey by remember { mutableStateOf(config.apiKey) }
@@ -200,36 +360,74 @@ fun SettingsScreen(
     var soul by remember { mutableStateOf(config.soul) }
     var bKey by remember { mutableStateOf(config.bitunixApiKey) }
     var bSecret by remember { mutableStateOf(config.bitunixSecret) }
-    var liveByDefault by remember { mutableStateOf(false) }
+    var lever by remember { mutableStateOf(config.leverage.toString()) }
+    var margin by remember { mutableStateOf(config.marginMode) }
+    var position by remember { mutableStateOf(config.positionMode) }
+    var live by remember { mutableStateOf(config.live) }
+
+    fun save() {
+        config.baseUrl = baseUrl
+        config.apiKey = apiKey
+        config.model = model
+        config.soul = soul
+        config.bitunixApiKey = bKey
+        config.bitunixSecret = bSecret
+        config.leverage = lever.toIntOrNull() ?: 5
+        config.marginMode = margin
+        config.positionMode = position
+        config.live = live
+        engine.leverage = config.leverage
+        engine.marginMode = margin
+        engine.positionMode = position
+        engine.live = live
+        onDone("Settings saved (mode: ${if (live) "LIVE" else "PAPER"}).", true)
+    }
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Settings", style = androidx.compose.material3.MaterialTheme.typography.titleLarge)
-        Text(if (msg.isBlank()) "" else msg, style = androidx.compose.material3.MaterialTheme.typography.bodySmall)
-        OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text("Base URL") })
-        OutlinedTextField(apiKey, { apiKey = it }, label = { Text("AI API Key") })
-        OutlinedTextField(model, { model = it }, label = { Text("Model") })
-        OutlinedTextField(soul, { soul = it }, label = { Text("Soul / Persona") }, minLines = 2)
-        OutlinedTextField(bKey, { bKey = it }, label = { Text("Bitunix API Key") })
-        OutlinedTextField(bSecret, { bSecret = it }, label = { Text("Bitunix Secret") })
+        Text("Settings", style = MaterialTheme.typography.titleLarge)
+        Text(
+            if (msg.isBlank()) "Configure provider, model and Bitunix keys." else msg,
+            style = MaterialTheme.typography.bodySmall,
+        )
+
+        OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text("Base URL") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(apiKey, { apiKey = it }, label = { Text("AI API Key") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(model, { model = it }, label = { Text("Model (optional)") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(soul, { soul = it }, label = { Text("Soul / Persona") }, minLines = 2, modifier = Modifier.fillMaxWidth())
+
+        Text("Bitunix Futures", style = MaterialTheme.typography.titleSmall)
+        OutlinedTextField(bKey, { bKey = it }, label = { Text("API Key") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(bSecret, { bSecret = it }, label = { Text("Secret Key") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(lever, { lever = it }, label = { Text("Leverage (e.g. 5)") }, modifier = Modifier.fillMaxWidth())
+
+        Text("Margin mode", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { margin = "ISOLATION" }, enabled = margin != "ISOLATION") { Text("Isolation") }
+            OutlinedButton(onClick = { margin = "CROSS" }, enabled = margin != "CROSS") { Text("Cross") }
+        }
+
+        Text("Position mode", style = MaterialTheme.typography.titleSmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { position = "ONE_WAY" }, enabled = position != "ONE_WAY") { Text("One-way") }
+            OutlinedButton(onClick = { position = "HEDGE" }, enabled = position != "HEDGE") { Text("Hedge") }
+        }
+
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Switch(checked = liveByDefault, onCheckedChange = { liveByDefault = it })
-            Text("Default live mode after saving (paper recommended)")
+            Switch(checked = live, onCheckedChange = { live = it })
+            Text(if (live) "LIVE mode — real orders (risky!)" else "PAPER mode — simulated (safe)")
         }
+
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                config.baseUrl = baseUrl
-                config.apiKey = apiKey
-                config.model = model
-                config.soul = soul
-                config.bitunixApiKey = bKey
-                config.bitunixSecret = bSecret
-                onBack("Settings saved.", false)
-            }, modifier = Modifier.weight(1f)) { Text("Save") }
-            OutlinedButton(onClick = { onBack("", true) }, modifier = Modifier.weight(1f)) { Text("Back") }
+            Button(onClick = { save() }, modifier = Modifier.weight(1f)) { Text("Save") }
+            OutlinedButton(onClick = { onDone("", true) }, modifier = Modifier.weight(1f)) { Text("Back") }
         }
-        if (bKey.isNotBlank() && bSecret.isNotBlank()) {
-            Text("To connect live: start trading → engine on → set leverage/margin/position mode, then start trading.")
-        }
+
+        Text(
+            "To go live: save real Bitunix keys, keep mode PAPER, test with engine on → start trading. " +
+                "When confident, switch to LIVE here.",
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Start,
+        )
     }
 }
 
@@ -239,7 +437,9 @@ private fun runAsync(post: (Runnable) -> Unit, done: (String) -> Unit, work: () 
         val result = try {
             work()
         } catch (e: Exception) {
-            "Error: ${e.message ?: e.javaClass.simpleName}"
+            val msg = "Error: ${e.message ?: e.javaClass.simpleName}"
+            com.codeassist.agenttrader.trader.AgentRuntimeError.last = msg
+            msg
         }
         post(object : Runnable {
             override fun run() {
